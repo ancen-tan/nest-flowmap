@@ -1,0 +1,592 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__ · flow maps</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1c2330; --muted: #5f6b7a; --line: #dfe3e8;
+    --accent: #2456c4; --accent-ink: #ffffff; --accent-soft: #e6edfb; --accent-line: #c5d4f3;
+    --code: #f0f2f5; --canvas: #ffffff;
+    --get: #1f7a3a; --post: #2456c4; --put: #a05a00; --patch: #7a3fb0; --delete: #b3261e; --job: #00707c;
+    --warn-bg: #fff6dd; --warn-line: #e3c25a;
+    --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  }
+  :root[data-theme="dark"] {
+    --bg: #12151a; --panel: #1a1f26; --ink: #e6e9ee; --muted: #9aa5b3; --line: #2c333d;
+    --accent: #8fb3ff; --accent-ink: #12151a; --accent-soft: #1f2b44; --accent-line: #34466b;
+    --code: #232a33; --canvas: #161a20;
+    --get: #6fcf8a; --post: #8fb3ff; --put: #f0b060; --patch: #c9a0f0; --delete: #f2938c; --job: #6fd3de;
+    --warn-bg: #2f2a17; --warn-line: #6b5a1e;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 var(--font); }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+  code { background: var(--code); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+  button, input, select { font: inherit; color: inherit; }
+  .app { display: grid; grid-template-columns: 300px minmax(0, 1fr); height: 100vh; }
+
+  aside { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  .brand { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
+  .brand h1 { font-size: 15px; margin: 0 0 2px; overflow-wrap: anywhere; }
+  .brand p { margin: 0; color: var(--muted); font-size: 12px; }
+  .search { padding: 10px 12px; }
+  .search input { width: 100%; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+  .search input:focus { border-color: var(--accent); outline: none; }
+  .search input:focus-visible, button:focus-visible, .item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  nav { overflow-y: auto; padding: 0 8px 16px; flex: 1; }
+  .group { margin: 14px 8px 4px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+  .item { display: flex; gap: 8px; align-items: baseline; width: 100%; text-align: left; padding: 6px 8px; border: 0; border-radius: 8px; background: none; cursor: pointer; }
+  .item:hover { background: var(--accent-soft); }
+  .item[aria-current="true"] { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); font-weight: 500; }
+  .item .p { overflow-wrap: anywhere; }
+  .verb { flex: none; min-width: 52px; font: 700 11px/1.6 ui-monospace, Menlo, Consolas, monospace; letter-spacing: .02em; }
+  .verb.GET { color: var(--get); } .verb.POST { color: var(--post); } .verb.PUT { color: var(--put); }
+  .verb.PATCH { color: var(--patch); } .verb.DELETE { color: var(--delete); }
+  .verb.JOB, .verb.EVENT, .verb.CRON, .verb.MESSAGE { color: var(--job); }
+
+  main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  header { padding: 14px 20px 0; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .title { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; }
+  .title .verb { font-size: 14px; min-width: 0; }
+  .title h2 { margin: 0; font: 600 18px/1.3 ui-monospace, Menlo, Consolas, monospace; color: var(--ink); overflow-wrap: anywhere; }
+  .sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 10px; }
+  .tabs { display: flex; gap: 2px; }
+  .tab { padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; background: none; cursor: pointer; color: var(--muted); }
+  .tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  .tab:hover { color: var(--accent); }
+  .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: auto; padding-bottom: 6px; }
+  .tools button, .tools label { padding: 4px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); cursor: pointer; font-size: 12.5px; white-space: nowrap; }
+  .tools button:hover, .tools label:hover { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent); }
+  .tools label { display: inline-flex; gap: 6px; align-items: center; }
+  .tools select { border: 0; background: transparent; padding: 0; font-size: 12.5px; cursor: pointer; }
+
+  .stage { flex: 1; min-height: 0; overflow: auto; background: var(--canvas); cursor: grab; }
+  .stage.dragging { cursor: grabbing; user-select: none; }
+  .stage svg { display: block; margin: 16px; }
+  .stage .foldable { cursor: pointer; }
+  .stage .foldable:hover > rect, .stage .foldable:hover > polygon, .stage .foldable:hover > path { filter: brightness(0.94); }
+  .details { flex: 1; min-height: 0; overflow: auto; padding: 4px 20px 40px; }
+  .details h3 { margin: 22px 0 8px; font-size: 14px; }
+  .details h4 { margin: 14px 0 6px; font-size: 13px; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; background: var(--panel); }
+  th, td { text-align: left; vertical-align: top; padding: 6px 10px; border: 1px solid var(--line); font-size: 13px; }
+  th { background: var(--accent-soft); font-weight: 600; white-space: nowrap; }
+  .req { font-weight: 600; } .opt { color: var(--muted); }
+  .st { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .st.ok { color: var(--get); } .st.err { color: var(--delete); }
+  .notes { margin: 0; padding: 10px 14px 10px 30px; background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 6px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 20px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 12px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+  .legend i { width: 11px; height: 11px; border-radius: 3px; border: 1.5px solid; display: inline-block; }
+  .error { margin: 16px; padding: 12px; border: 1px solid var(--delete); border-radius: 6px; white-space: pre-wrap; cursor: auto; }
+  .empty { padding: 30px 20px; color: var(--muted); }
+  .export { border-top: 1px solid var(--line); padding: 10px 12px 12px; display: grid; gap: 8px; }
+  .export h2 { margin: 0; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .export .btns.three { grid-template-columns: 1fr 1fr 1fr; }
+  .export label { display: grid; gap: 3px; font-size: 12px; color: var(--muted); }
+  .export input { width: 100%; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-size: 12.5px; }
+  .export input:focus { border-color: var(--accent); outline: none; }
+  .export .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .export button { padding: 7px 9px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent); color: var(--accent-ink); cursor: pointer; font-size: 12.5px; font-weight: 500; }
+  .export button:hover:not(:disabled) { filter: brightness(1.08); }
+  .export button:disabled { opacity: .5; cursor: default; }
+  .export p { margin: 0; font-size: 12px; color: var(--muted); }
+  [hidden] { display: none !important; }
+
+  @media (max-width: 760px) {
+    .app { grid-template-columns: 1fr; height: auto; min-height: 100vh; }
+    aside { border-right: 0; border-bottom: 1px solid var(--line); max-height: 42vh; }
+    main { min-height: 80vh; }
+    .stage { min-height: 60vh; }
+    .tools { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="brand">
+      <h1 id="appName"></h1>
+      <p id="appFacts"></p>
+    </div>
+    <div class="search"><input id="q" type="search" placeholder="Filter by path, method or handler" aria-label="Filter entry points"></div>
+    <nav id="nav" aria-label="Entry points"></nav>
+    <section class="export" id="export" aria-labelledby="exportTitle">
+      <h2 id="exportTitle">Export API</h2>
+      <label>Base URL <input id="baseUrl" type="url" spellcheck="false"></label>
+      <div class="btns three">
+        <button type="button" id="exportPostman" title="Postman v2.1 collection">Postman</button>
+        <button type="button" id="exportBruno" title="Bruno collection (Import Collection, then Bruno Collection)">Bruno</button>
+        <button type="button" id="exportOpenApi" title="OpenAPI 3.0.0 document (JSON)">OpenAPI</button>
+      </div>
+      <p id="exportScope"></p>
+    </section>
+  </aside>
+  <main>
+    <header>
+      <div class="title"><span id="verb" class="verb"></span><h2 id="path"></h2></div>
+      <p class="sub" id="sub"></p>
+      <div class="bar">
+        <div class="tabs" role="tablist">
+          <button class="tab" role="tab" data-tab="flow">Flowchart</button>
+          <button class="tab" role="tab" data-tab="mindmap">Mindmap</button>
+          <button class="tab" role="tab" data-tab="details">Details</button>
+        </div>
+        <div class="tools" id="tools">
+          <label id="lanesWrap"><input type="checkbox" id="lanes"> Group by layer</label>
+          <label id="curveWrap">Lines <select id="curve" aria-label="Line style">
+            <option value="step">Right-angle</option>
+            <option value="linear">Straight</option>
+            <option value="basis">Curved</option>
+          </select></label>
+          <button id="expandAll" title="Show every step of every call">Expand all</button>
+          <button id="collapseAll" title="Fold every call into one box">Collapse all</button>
+          <button id="zoomOut" aria-label="Zoom out">−</button>
+          <button id="zoomIn" aria-label="Zoom in">+</button>
+          <button id="fit">Fit width</button>
+          <button id="actual">100%</button>
+          <button id="copy">Copy Mermaid</button>
+          <button id="theme">Dark / light</button>
+        </div>
+      </div>
+    </header>
+    <div class="legend" id="legend"></div>
+    <div class="stage" id="stage"></div>
+    <div class="details" id="details" hidden></div>
+  </main>
+</div>
+
+<!--__MERMAID__-->
+<script id="data" type="application/json">__DATA__</script>
+<script>
+(function () {
+  'use strict';
+  var DATA = JSON.parse(document.getElementById('data').textContent);
+  var app = DATA.app;
+  var OVERVIEW = { id: '__overview', method: '', path: 'Overview', handler: '', group: '', kind: 'overview' };
+  var state = { id: null, tab: 'flow', lanes: false, zoom: null, theme: null, seq: 0, curve: 'step', expanded: {}, dragged: false };
+  var BUDGET = 50; // nodes shown at first; larger diagrams open folded at the call level
+  var $ = function (id) { return document.getElementById(id); };
+  /*__LIB__*/
+
+  function el(tag, attrs, children) {
+    var n = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      if (k === 'text') n.textContent = attrs[k];
+      else if (k === 'class') n.className = attrs[k];
+      else n.setAttribute(k, attrs[k]);
+    });
+    (children || []).forEach(function (c) { if (c) n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); });
+    return n;
+  }
+  function code(text) { return el('code', { text: text }); }
+
+  // ---- theme ------------------------------------------------------------------------------
+  var media = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : { matches: false };
+  function isDark() { return state.theme ? state.theme === 'dark' : media.matches; }
+  function applyTheme() {
+    document.documentElement.setAttribute('data-theme', isDark() ? 'dark' : 'light');
+    if (window.mermaid) {
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        theme: 'base',
+        maxTextSize: 500000,
+        maxEdges: 5000,
+        themeVariables: isDark()
+          ? { darkMode: true, background: '#161a20', primaryColor: '#2a313b', primaryTextColor: '#e6e9ee', primaryBorderColor: '#6b7684', lineColor: '#9aa5b3', clusterBkg: '#1c222a', clusterBorder: '#3a4350', edgeLabelBackground: '#161a20', fontSize: '14px' }
+          : { background: '#ffffff', primaryColor: '#f3f4f6', primaryTextColor: '#1c2330', primaryBorderColor: '#8a94a3', lineColor: '#5f6b7a', clusterBkg: '#fafbfc', clusterBorder: '#cfd6de', edgeLabelBackground: '#ffffff', fontSize: '14px' },
+        flowchart: { useMaxWidth: false, htmlLabels: true, curve: state.curve, nodeSpacing: 40, rankSpacing: 46 },
+        mindmap: { useMaxWidth: false, padding: 12 }
+      });
+    }
+    renderLegend();
+  }
+  if (media.addEventListener) media.addEventListener('change', function () { if (!state.theme) { applyTheme(); render(); } });
+
+  function renderLegend() {
+    var names = { request: 'Request', middleware: 'Middleware / guards', validation: 'Validation', controller: 'Controller', service: 'Service', entity: 'Entity / DB', external: 'External / async', ok: 'Success', err: 'Error' };
+    var defs = DATA.classDefs[isDark() ? 'dark' : 'light'];
+    var legend = $('legend');
+    legend.textContent = '';
+    Object.keys(names).forEach(function (k) {
+      var m = new RegExp('classDef ' + k + ' fill:(#[0-9a-fA-F]+),stroke:(#[0-9a-fA-F]+)').exec(defs);
+      if (!m) return;
+      var sw = el('i');
+      sw.style.background = m[1];
+      sw.style.borderColor = m[2];
+      legend.appendChild(el('span', {}, [sw, names[k]]));
+    });
+    legend.appendChild(el('span', { text: 'diamond: decision · cylinder: database · slanted: external or async · dashed line: error path' }));
+    legend.appendChild(el('span', { id: 'foldHint', text: '▸ N more steps: click the box to expand it; click an expanded call to fold it' }));
+  }
+
+  // ---- navigation -------------------------------------------------------------------------
+  function current() {
+    if (state.id === OVERVIEW.id) return OVERVIEW;
+    return app.endpoints.filter(function (e) { return e.id === state.id; })[0] || OVERVIEW;
+  }
+  function renderNav() {
+    var q = $('q').value.trim().toLowerCase();
+    var nav = $('nav');
+    nav.textContent = '';
+    var item = function (ep) {
+      var b = el('button', { class: 'item', type: 'button' }, [
+        ep.method ? el('span', { class: 'verb ' + ep.method, text: ep.method }) : null,
+        el('span', { class: 'p', text: ep.path })
+      ]);
+      if (ep.id === state.id) b.setAttribute('aria-current', 'true');
+      b.addEventListener('click', function () { select(ep.id); });
+      return b;
+    };
+    if (!q) nav.appendChild(item(OVERVIEW));
+    var lastGroup = null, shown = 0;
+    app.endpoints.forEach(function (ep) {
+      if (!matches(ep, q)) return;
+      if (ep.group !== lastGroup) { nav.appendChild(el('div', { class: 'group', text: ep.group })); lastGroup = ep.group; }
+      nav.appendChild(item(ep));
+      shown++;
+    });
+    if (!shown) nav.appendChild(el('div', { class: 'empty', text: 'No entry point matches.' }));
+    renderExportScope();
+  }
+  function matches(ep, q) { return !q || (ep.method + ' ' + ep.path + ' ' + ep.handler).toLowerCase().indexOf(q) >= 0; }
+
+  // ---- export -----------------------------------------------------------------------------
+  // Exports the HTTP endpoints that match the sidebar filter, as a Postman v2.1 collection or a
+  // Bruno collection (Bruno: Import collection > Bruno collection).
+  var BASE_KEY = 'nest-flowmap:baseUrl:' + app.name;
+  function exportSelection() {
+    var q = $('q').value.trim().toLowerCase();
+    var ids = {};
+    app.endpoints.forEach(function (ep) { if (matches(ep, q)) ids[ep.id] = true; });
+    return DATA.exports.requests.filter(function (r) { return ids[r.id]; });
+  }
+  function renderExportScope() {
+    var total = DATA.exports.requests.length, n = exportSelection().length;
+    $('export').hidden = !total;
+    $('exportScope').textContent = n === total
+      ? 'All ' + total + ' HTTP endpoints. Filter the list to export fewer.'
+      : n + ' of ' + total + ' HTTP endpoints, matching the filter.';
+    $('exportPostman').disabled = $('exportBruno').disabled = $('exportOpenApi').disabled = !n;
+  }
+  function download(kind) {
+    var base = $('baseUrl').value.trim() || DATA.exports.baseUrl;
+    var selected = exportSelection();
+    var doc;
+    if (kind === 'openapi') {
+      var ids = {};
+      selected.forEach(function (r) { ids[r.id] = true; });
+      var parts = DATA.exports.openapi;
+      doc = assembleOpenApi(parts, parts.operations.filter(function (o) { return ids[o.id]; }), base);
+    } else {
+      doc = assembleCollection(kind, app.name, selected, base);
+    }
+    var slug = app.name.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'collection';
+    var blob = new Blob([JSON.stringify(doc, null, 2) + '\n'], { type: 'application/json' });
+    var suffix = { postman: '.postman_collection.json', bruno: '.bruno.json', openapi: '.openapi.json' }[kind];
+    var a = el('a', { href: URL.createObjectURL(blob), download: slug + suffix });
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  }
+  try { $('baseUrl').value = localStorage.getItem(BASE_KEY) || DATA.exports.baseUrl; } catch (e) { $('baseUrl').value = DATA.exports.baseUrl; }
+  $('baseUrl').addEventListener('change', function () { try { localStorage.setItem(BASE_KEY, $('baseUrl').value.trim()); } catch (e) { /* storage unavailable */ } });
+  $('exportPostman').addEventListener('click', function () { download('postman'); });
+  $('exportBruno').addEventListener('click', function () { download('bruno'); });
+  $('exportOpenApi').addEventListener('click', function () { download('openapi'); });
+  function select(id) {
+    state.id = id;
+    state.zoom = null;
+    if (id === OVERVIEW.id && state.tab === 'flow') state.tab = 'mindmap';
+    try { history.replaceState(null, '', '#' + encodeURIComponent(id)); } catch (e) { /* file:// in some browsers */ }
+    renderNav();
+    render();
+  }
+
+  // ---- diagrams ---------------------------------------------------------------------------
+  function source() {
+    var ep = current();
+    if (ep.kind === 'overview') return app.overviewMindmap;
+    if (state.tab === 'mindmap') return ep.mermaid.mindmap;
+    return flowchart(viewGraph(ep), state.lanes) + '\n' + DATA.classDefs[isDark() ? 'dark' : 'light'];
+  }
+  // ---- folding ----------------------------------------------------------------------------
+  function owners(ep) {
+    if (!ep._owners) {
+      ep._owners = {};
+      ep.graph.nodes.forEach(function (n) { if (n.scope) ep._owners[n.scope] = true; });
+    }
+    return ep._owners;
+  }
+  function expandedFor(ep) {
+    if (!state.expanded[ep.id]) state.expanded[ep.id] = defaultExpanded(ep.graph, BUDGET);
+    return state.expanded[ep.id];
+  }
+  function viewGraph(ep) { return collapseGraph(ep.graph, expandedFor(ep)); }
+  function toggle(ep, id) {
+    var open = expandedFor(ep).slice();
+    var i = open.indexOf(id);
+    if (i >= 0) open.splice(i, 1); else open.push(id);
+    state.expanded[ep.id] = open;
+    renderDiagram(true);
+  }
+  // Mermaid gives each node an element id ending in "flowchart-<nodeId>-<n>".
+  function bindFolding(ep) {
+    var own = owners(ep);
+    Array.prototype.forEach.call($('stage').querySelectorAll('g.node'), function (g) {
+      var m = /flowchart-(n\d+)-\d+$/.exec(g.id || '');
+      if (!m || !own[m[1]]) return;
+      var open = expandedFor(ep).indexOf(m[1]) >= 0;
+      g.classList.add('foldable');
+      var tip = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+      tip.textContent = open ? 'Click to fold this call into one box' : 'Click to show the steps inside';
+      g.insertBefore(tip, g.firstChild);
+      g.addEventListener('click', function () { if (!state.dragged) toggle(ep, m[1]); });
+    });
+  }
+  function applyZoom() {
+    var svg = $('stage').querySelector('svg');
+    if (!svg || !svg.viewBox || !svg.viewBox.baseVal || !svg.viewBox.baseVal.width) return;
+    var vb = svg.viewBox.baseVal;
+    var room = $('stage').clientWidth - 32;
+    if (state.zoom === null) state.zoom = Math.max(0.3, Math.min(1, room / vb.width));
+    svg.style.maxWidth = 'none';
+    svg.setAttribute('width', Math.round(vb.width * state.zoom));
+    svg.setAttribute('height', Math.round(vb.height * state.zoom));
+  }
+  function renderDiagram(keepView) {
+    var stage = $('stage');
+    var text = source();
+    if (!window.mermaid) {
+      stage.textContent = '';
+      stage.appendChild(el('div', { class: 'error', text: 'Mermaid did not load, so the diagram cannot be drawn. The source is:\n\n' + text }));
+      return;
+    }
+    var token = ++state.seq;
+    var isMindmap = /^mindmap/.test(text);
+    var attempt = function (n) {
+      // Mermaid's mindmap layout occasionally fails on one exact geometry; a hair of extra width on
+      // the root label gives it a different layout, so retry a few times before reporting an error.
+      var src = n && isMindmap ? text.replace(/root\(\("(.*)"\)\)/, function (m, label) { return 'root(("' + label + new Array(n + 1).join('\u00a0') + '"))'; }) : text;
+      return mermaid.render('diagram' + token + '_' + n, src).catch(function (err) {
+        var stale = document.getElementById('ddiagram' + token + '_' + n);
+        if (stale && stale.parentNode) stale.parentNode.removeChild(stale);
+        if (isMindmap && n < 3) return attempt(n + 1);
+        throw err;
+      });
+    };
+    attempt(0).then(function (out) {
+      if (token !== state.seq) return;
+      var top = stage.scrollTop, left = stage.scrollLeft;
+      stage.innerHTML = out.svg;
+      applyZoom();
+      stage.scrollTop = keepView ? top : 0;
+      stage.scrollLeft = keepView ? left : 0;
+      var ep = current();
+      if (state.tab === 'flow' && ep.graph) bindFolding(ep);
+    }).catch(function (err) {
+      if (token !== state.seq) return;
+      stage.textContent = '';
+      stage.appendChild(el('div', { class: 'error', text: 'Mermaid could not draw this diagram: ' + (err && err.message ? err.message : err) + '\n\n' + text }));
+    });
+  }
+
+  // ---- details ----------------------------------------------------------------------------
+  function table(head, rows) {
+    var t = el('table');
+    t.appendChild(el('thead', {}, [el('tr', {}, head.map(function (h) { return el('th', { text: h }); }))]));
+    var body = el('tbody');
+    rows.forEach(function (r) {
+      body.appendChild(el('tr', {}, r.map(function (c) { return el('td', {}, [c === undefined || c === null ? '' : c]); })));
+    });
+    t.appendChild(body);
+    return el('div', { class: 'scroll' }, [t]);
+  }
+  function loc(l) { return l ? code(l.file + ':' + l.line) : ''; }
+  function fieldRows(fields, prefix) {
+    var rows = [];
+    fields.forEach(function (f) {
+      var rules = el('span');
+      f.rules.forEach(function (r) { rules.appendChild(code(r)); rules.appendChild(document.createTextNode(' ')); });
+      rows.push([code(prefix + f.name), code(f.type), el('span', { class: f.required ? 'req' : 'opt', text: f.required ? 'required' : 'optional' }), rules, f.note || '']);
+      if (f.nested) rows = rows.concat(fieldRows(f.nested, prefix + f.name + '.'));
+    });
+    return rows;
+  }
+  function renderDetails() {
+    var ep = current();
+    var d = $('details');
+    d.textContent = '';
+    if (ep.kind === 'overview') {
+      d.appendChild(el('h3', { text: 'Entry points' }));
+      d.appendChild(table(['Method', 'Path', 'Handler', 'Guards', 'Responses'], app.endpoints.map(function (e) {
+        var statuses = [];
+        e.responses.forEach(function (r) { var s = r.status ? String(r.status) : (r.kind === 'success' ? 'ok' : (e.kind === 'http' ? 'varies' : 'fail')); if (statuses.indexOf(s) < 0) statuses.push(s); });
+        return [el('span', { class: 'verb ' + e.method, text: e.method }), code(e.path), code(e.handler), e.pipeline.filter(function (p) { return p.kind === 'guard'; }).map(function (p) { return p.name; }).join(', '), statuses.join(' ')];
+      })));
+      if (app.warnings.length) { d.appendChild(el('h3', { text: 'Analysis notes' })); d.appendChild(el('ul', { class: 'notes' }, app.warnings.map(function (w) { return el('li', { text: w }); }))); }
+      return;
+    }
+    if (ep.warnings.length) {
+      d.appendChild(el('h3', { text: 'Analysis notes' }));
+      d.appendChild(el('ul', { class: 'notes' }, ep.warnings.map(function (w) { return el('li', { text: w }); })));
+    }
+    if (ep.pipeline.length) {
+      d.appendChild(el('h3', { text: 'Middleware, guards, interceptors, pipes (in execution order)' }));
+      d.appendChild(table(['#', 'Type', 'Name', 'Scope', 'Note', 'Source'], ep.pipeline.map(function (p, i) { return [String(i + 1), p.kind, code(p.name), p.scope, p.note || '', loc(p.loc)]; })));
+    }
+    if (ep.params.length) {
+      d.appendChild(el('h3', { text: 'Validation' }));
+      ep.params.forEach(function (p) {
+        var h = el('h4', {}, [p.in + (p.key ? ' ' + p.key : '') + ': ', code(p.dto || p.type)]);
+        if (p.pipes.length) { h.appendChild(document.createTextNode('  pipes: ')); p.pipes.forEach(function (x) { h.appendChild(code(x)); h.appendChild(document.createTextNode(' ')); }); }
+        d.appendChild(h);
+        if (p.fields.length) d.appendChild(table(['Field', 'Type', 'Required', 'Rules', 'Note'], fieldRows(p.fields, '')));
+      });
+    }
+    if (ep.entities.length) {
+      d.appendChild(el('h3', { text: 'Entities' }));
+      ep.entities.forEach(function (e) {
+        d.appendChild(el('h4', {}, [e.name + (e.table ? ' (table ' + e.table + ')  ' : '  '), loc(e.loc)]));
+        var p = el('p', {}, ['Operations in this flow: ']);
+        e.ops.forEach(function (o) { p.appendChild(code(o + '()')); p.appendChild(document.createTextNode(' ')); });
+        if (e.hooks.length) p.appendChild(document.createTextNode(' · Hooks: ' + e.hooks.map(function (h) { return '@' + h.event + ' ' + h.method; }).join(', ')));
+        if (e.relations.length) p.appendChild(document.createTextNode(' · Relations: ' + e.relations.map(function (r) { return r.name + ' ' + r.kind + ' → ' + r.target; }).join('; ')));
+        if (e.subscribers.length) p.appendChild(document.createTextNode(' · Subscribers: ' + e.subscribers.join(', ')));
+        d.appendChild(p);
+        if (e.columns.length) d.appendChild(table(['Column', 'Type', 'Constraints'], e.columns.map(function (c) { return [code(c.name), c.type ? code(c.type) : '', c.constraints.join(', ')]; })));
+      });
+    }
+    d.appendChild(el('h3', { text: ep.kind === 'http' ? 'Responses' : 'Outcomes' }));
+    if (ep.returnType) d.appendChild(el('p', {}, ['Return type: ', code(ep.returnType)]));
+    d.appendChild(table(['Status', 'Result', 'When', 'Raised in', 'Source'], ep.responses.map(function (r) {
+      return [el('span', { class: 'st ' + (r.kind === 'success' ? 'ok' : 'err'), text: r.status ? String(r.status) : (r.kind === 'success' ? 'ok' : (ep.kind === 'http' ? 'varies' : 'fail')) }), r.label, r.when, r.origin, loc(r.loc)];
+    })));
+    if (ep.responseFields && ep.responseFields.length) {
+      d.appendChild(el('h4', { text: 'Response fields' }));
+      d.appendChild(table(['Field', 'Type', 'Note'], ep.responseFields.map(function (f) { return [code(f.name), code(f.type), f.note || '']; })));
+    }
+    if (ep.declaredResponses.length) d.appendChild(el('p', { text: 'Declared with Swagger decorators: ' + ep.declaredResponses.join(', ') }));
+  }
+
+  // ---- page -------------------------------------------------------------------------------
+  function render() {
+    var ep = current();
+    var overview = ep.kind === 'overview';
+    $('verb').textContent = ep.method;
+    $('verb').className = 'verb ' + ep.method;
+    $('path').textContent = overview ? app.name : ep.path;
+    var sub = $('sub');
+    sub.textContent = '';
+    if (overview) {
+      sub.textContent = app.endpoints.length + ' entry points';
+    } else {
+      sub.appendChild(code(ep.handler));
+      sub.appendChild(document.createTextNode('  ' + ep.loc.file + ':' + ep.loc.line + (ep.summary ? '  ·  ' + ep.summary : '')));
+    }
+    Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (t) {
+      t.setAttribute('aria-selected', String(t.getAttribute('data-tab') === state.tab));
+      t.hidden = overview && t.getAttribute('data-tab') === 'flow';
+    });
+    var diagram = state.tab !== 'details';
+    $('stage').hidden = !diagram;
+    $('details').hidden = diagram;
+    $('legend').hidden = state.tab !== 'flow';
+    $('lanesWrap').hidden = state.tab !== 'flow';
+    $('curveWrap').hidden = state.tab !== 'flow';
+    ['zoomOut', 'zoomIn', 'fit', 'actual', 'copy'].forEach(function (id) { $(id).hidden = !diagram; });
+    var foldable = state.tab === 'flow' && !overview && Object.keys(owners(ep)).length > 0;
+    $('expandAll').hidden = $('collapseAll').hidden = !foldable;
+    $('foldHint').hidden = !foldable;
+    if (diagram) renderDiagram(); else renderDetails();
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (t) {
+    t.addEventListener('click', function () { state.tab = t.getAttribute('data-tab'); state.zoom = null; render(); });
+  });
+  $('q').addEventListener('input', renderNav);
+  try { state.curve = localStorage.getItem('nest-flowmap:curve') || state.curve; } catch (e) { /* storage unavailable */ }
+  $('curve').value = state.curve;
+  $('curve').addEventListener('change', function () {
+    state.curve = $('curve').value;
+    try { localStorage.setItem('nest-flowmap:curve', state.curve); } catch (e) { /* storage unavailable */ }
+    applyTheme();
+    render();
+  });
+  $('expandAll').addEventListener('click', function () {
+    var ep = current();
+    state.expanded[ep.id] = Object.keys(owners(ep));
+    renderDiagram(true);
+  });
+  $('collapseAll').addEventListener('click', function () {
+    var ep = current();
+    state.expanded[ep.id] = ep.graph.nodes.filter(function (n) { return owners(ep)[n.id] && !n.scope && n.shape === 'sub'; }).map(function (n) { return n.id; });
+    renderDiagram(true);
+  });
+  $('lanes').addEventListener('change', function () { state.lanes = $('lanes').checked; state.zoom = null; render(); });
+  $('zoomIn').addEventListener('click', function () { state.zoom = Math.min(3, (state.zoom || 1) * 1.2); applyZoom(); });
+  $('zoomOut').addEventListener('click', function () { state.zoom = Math.max(0.15, (state.zoom || 1) / 1.2); applyZoom(); });
+  $('actual').addEventListener('click', function () { state.zoom = 1; applyZoom(); });
+  $('fit').addEventListener('click', function () {
+    var svg = $('stage').querySelector('svg');
+    if (!svg || !svg.viewBox.baseVal.width) return;
+    state.zoom = ($('stage').clientWidth - 32) / svg.viewBox.baseVal.width;
+    applyZoom();
+  });
+  $('theme').addEventListener('click', function () { state.theme = isDark() ? 'light' : 'dark'; applyTheme(); render(); });
+  $('copy').addEventListener('click', function () {
+    var text = source();
+    var done = function () { $('copy').textContent = 'Copied'; setTimeout(function () { $('copy').textContent = 'Copy Mermaid'; }, 1200); };
+    var fallback = function () {
+      var ta = el('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) { /* clipboard unavailable */ }
+      document.body.removeChild(ta);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback); else fallback();
+  });
+
+  // drag to pan
+  (function () {
+    var stage = $('stage'), drag = null;
+    stage.addEventListener('pointerdown', function (e) {
+      if (e.button !== 0 || e.pointerType === 'touch') return;
+      drag = { x: e.clientX, y: e.clientY, left: stage.scrollLeft, top: stage.scrollTop };
+      state.dragged = false;
+      stage.classList.add('dragging');
+    });
+    window.addEventListener('pointermove', function (e) {
+      if (!drag) return;
+      if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 4) state.dragged = true;
+      stage.scrollLeft = drag.left - (e.clientX - drag.x);
+      stage.scrollTop = drag.top - (e.clientY - drag.y);
+    });
+    window.addEventListener('pointerup', function () { drag = null; stage.classList.remove('dragging'); });
+  })();
+
+  $('appName').textContent = app.name;
+  var facts = [app.endpoints.length + ' entry points'];
+  if (app.globalPrefix) facts.push('prefix /' + app.globalPrefix);
+  if (app.versioning) facts.push('versioning ' + app.versioning);
+  $('appFacts').textContent = facts.join(' · ');
+
+  var wanted = decodeURIComponent((location.hash || '').slice(1));
+  var first = wanted === OVERVIEW.id ? null : app.endpoints.filter(function (e) { return e.id === wanted; })[0] || app.endpoints[0];
+  state.id = first ? first.id : OVERVIEW.id;
+  if (!first) state.tab = 'mindmap';
+  applyTheme();
+  renderNav();
+  render();
+})();
+</script>
+</body>
+</html>

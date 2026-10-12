@@ -29,17 +29,27 @@ export interface Loc {
 /** A structured description of what a function does, reduced to the parts worth drawing. */
 export type Step =
   | { kind: 'action'; layer: Layer; label: string; loc?: Loc }
-  | { kind: 'call'; layer: Layer; label: string; body?: Step[]; note?: string; loc?: Loc }
+  | { kind: 'call'; layer: Layer; label: string; body?: Step[]; note?: string; raises?: Raise[]; loc?: Loc }
   | { kind: 'db'; layer: Layer; label: string; entity?: string; op: string; loc?: Loc }
   | { kind: 'external'; layer: Layer; label: string; loc?: Loc }
   | { kind: 'if'; layer: Layer; cond: string; then: Step[]; else?: Step[]; loc?: Loc }
   | { kind: 'switch'; layer: Layer; subject: string; cases: { label: string; body: Step[] }[]; hasDefault: boolean; loc?: Loc }
   | { kind: 'loop'; layer: Layer; label: string; body: Step[]; callback?: boolean; loc?: Loc }
-  | { kind: 'try'; layer: Layer; body: Step[]; catchLabel?: string; catchBody?: Step[]; finallyBody?: Step[]; loc?: Loc }
+  | { kind: 'try'; layer: Layer; body: Step[]; catchLabel?: string; catchVar?: string; catchBody?: Step[]; finallyBody?: Step[]; loc?: Loc }
   | { kind: 'group'; layer: Layer; label: string; body: Step[]; loc?: Loc }
-  | { kind: 'throw'; layer: Layer; exception: string; status?: number; message?: string; loc?: Loc }
+  | { kind: 'throw'; layer: Layer; exception: string; status?: number; message?: string; rethrow?: string; passThrough?: boolean; loc?: Loc }
   | { kind: 'return'; layer: Layer; expr?: string; verdict?: boolean; loc?: Loc }
-  | { kind: 'respond'; layer: Layer; status?: number; label: string; loc?: Loc };
+  | { kind: 'respond'; layer: Layer; status?: number; label: string; loc?: Loc }
+  /** `break` / `continue`: leaves the enclosing switch or loop body. */
+  | { kind: 'jump'; layer: Layer; jump: 'break' | 'continue'; loc?: Loc };
+
+/** An exception a function can let escape: kept for call sites that are not expanded again. */
+export interface Raise {
+  exception: string;
+  status?: number;
+  message?: string;
+  loc?: Loc;
+}
 
 export type Shape = 'rect' | 'stadium' | 'sub' | 'decision' | 'db' | 'io' | 'hex';
 
@@ -80,8 +90,10 @@ export interface FieldRule {
   type: string;
   required: boolean;
   rules: string[];
-  /** Allowed values of an `@IsEnum()` field, when the enum is declared in the project. */
-  values?: (string | number)[];
+  /** Allowed values from `@IsEnum()` / `@IsIn()`, when they can be resolved. */
+  values?: (string | number | boolean)[];
+  /** Class name of a nested DTO (`@Type(() => X)` or the declared type). */
+  dto?: string;
   note?: string;
   nested?: FieldRule[];
 }
@@ -118,6 +130,14 @@ export interface ResponseDoc {
   loc?: Loc;
 }
 
+export interface AuthDoc {
+  scheme: 'bearer' | 'basic' | 'cookie' | 'none';
+  /** Cookie name, for `cookie`. */
+  cookie?: string;
+  /** What the scheme was inferred from. */
+  source?: string;
+}
+
 export interface EndpointDoc {
   id: string;
   kind: 'http' | 'job';
@@ -130,6 +150,7 @@ export interface EndpointDoc {
   summary?: string;
   metadata: string[];
   pipeline: PipelineItem[];
+  auth?: AuthDoc;
   params: ParamDoc[];
   entities: EntityDoc[];
   returnType?: string;

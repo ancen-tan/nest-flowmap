@@ -259,7 +259,7 @@ test('OpenAPI 3.0.0 document: paths, parameters, DTO schemas with validation rul
   assert.match(put.responses['401'].description, /Token revoked/);
 
   const create = doc.paths['/api/orders'].post;
-  assert.deepEqual(create.parameters, [{ name: 'idempotency-key', in: 'header', required: true, schema: { type: 'string' } }]);
+  assert.deepEqual(create.parameters, [{ name: 'idempotency-key', in: 'header', required: false, schema: { type: 'string' } }]);
   assert.deepEqual(create.requestBody.content['application/json'].schema, { $ref: '#/components/schemas/CreateOrderDto' });
   const dto = doc.components.schemas.CreateOrderDto;
   assert.deepEqual(dto.required, ['customer', 'contact', 'channel', 'itemIds']);

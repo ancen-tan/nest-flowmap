@@ -1,5 +1,6 @@
-import { AppDoc, EndpointDoc, FieldRule, ParamDoc } from '../model';
-import { authFor, docsFor } from './collections';
+import { AppDoc, AuthDoc, EndpointDoc, FieldRule, ParamDoc } from '../model';
+import { docsFor } from './collections';
+import { hasRule, isEach, matchesPattern, numArg, ruleArgs } from './rules';
 
 /**
  * OpenAPI 3.0.0 description of the HTTP endpoints. `openApiParts` runs at generation time and turns
@@ -16,7 +17,7 @@ export interface OpenApiOperation {
   /** Path in OpenAPI form, e.g. /v1/user/{id} */
   path: string;
   method: string;
-  auth: 'bearer' | 'basic' | 'none';
+  auth: AuthDoc;
   operation: Record<string, unknown>;
 }
 
@@ -25,13 +26,15 @@ export interface OpenApiParts {
   version: string;
   operations: OpenApiOperation[];
   schemas: Record<string, Schema>;
+  /** Routes with a method OpenAPI has no field for (`@All`, `@Search`). */
+  skipped: string[];
 }
 
 const REF = '#/components/schemas/';
 
-/** Literals in a rule argument such as `['A', 'B']`; undefined when the text was cut short. */
+/** Literals in an array literal's text such as `['A', 'B']`; undefined when the text was cut short. */
 function literals(text: string | undefined): (string | number | boolean)[] | undefined {
-  if (text === undefined || text.includes('…')) return undefined;
+  if (text === undefined || text.includes('…') || !/^\[.*\]$/.test(text.trim())) return undefined;
   const out: (string | number | boolean)[] = [];
   const re = /'([^']*)'|"([^"]*)"|(-?\d+(?:\.\d+)?)|\b(true|false)\b/g;
   for (let m = re.exec(text); m; m = re.exec(text)) {
@@ -40,15 +43,7 @@ function literals(text: string | undefined): (string | number | boolean)[] | und
   return out.length ? out : undefined;
 }
 
-function ruleArg(rules: string[], name: string): string | undefined {
-  const r = rules.find((x) => x.startsWith(`${name}(`));
-  return r?.slice(name.length + 1, -1);
-}
-
-function num(text: string | undefined): number | undefined {
-  const n = Number(text);
-  return text !== undefined && text.trim() !== '' && Number.isFinite(n) ? n : undefined;
-}
+const SAFE_KEY = /[^A-Za-z0-9._-]/g;
 
 class SchemaRegistry {
   schemas: Record<string, Schema> = {};
@@ -60,8 +55,9 @@ class SchemaRegistry {
     const key = JSON.stringify(schema);
     const known = this.keys.get(`${name}\n${key}`);
     if (known) return known;
-    let unique = name.replace(/[^A-Za-z0-9._-]/g, '_') || 'Schema';
-    for (let i = 2; this.schemas[unique]; i++) unique = `${name}_${i}`;
+    const base = name.replace(SAFE_KEY, '_') || 'Schema';
+    let unique = base;
+    for (let i = 2; this.schemas[unique]; i++) unique = `${base}_${i}`;
     this.schemas[unique] = schema;
     this.keys.set(`${name}\n${key}`, unique);
     return unique;
@@ -76,20 +72,23 @@ class SchemaRegistry {
 
   field(f: FieldRule): Schema {
     let type = f.type.trim();
-    const nullable = /\|\s*null\b/.test(type);
+    // `| null` is only accepted when the field is optional: @IsOptional lets null through, other rules reject it.
+    const nullable = /\|\s*null\b/.test(type) && !f.required;
     type = type.replace(/\s*\|\s*(null|undefined)\b/g, '').trim();
-    const isArray = /\[\]$/.test(type) || /^Array<.*>$/.test(type) || f.rules.includes('IsArray');
+    const isArray = /\[\]$/.test(type) || /^Array<.*>$/.test(type) || hasRule(f.rules, 'IsArray');
     const base = type.replace(/\[\]$/, '').replace(/^Array<(.*)>$/, '$1').trim();
-
-    const item: Schema = f.nested?.length ? { $ref: REF + this.register(base, f.nested) } : scalar(f, base);
     const r = f.rules;
+
+    // On an array, rules declared with { each: true } describe the items; the others describe the array.
+    const itemRules = isArray ? r.filter(isEach) : r;
+    const item: Schema = f.nested?.length ? { $ref: REF + this.register(f.dto ?? base, f.nested) } : scalar({ ...f, rules: itemRules }, base);
     let schema: Schema = item;
     if (isArray) {
       schema = { type: 'array', items: item };
-      const min = num(ruleArg(r, 'ArrayMinSize'));
-      const max = num(ruleArg(r, 'ArrayMaxSize'));
+      const min = numArg(r, 'ArrayMinSize');
+      const max = numArg(r, 'ArrayMaxSize');
       if (min !== undefined) schema.minItems = min;
-      else if (r.includes('ArrayNotEmpty')) schema.minItems = 1;
+      else if (hasRule(r, 'ArrayNotEmpty')) schema.minItems = 1;
       if (max !== undefined) schema.maxItems = max;
     }
     const notes = [f.note, r.length ? `Validation: ${r.join(', ')}` : undefined].filter(Boolean).join('. ');
@@ -98,7 +97,7 @@ class SchemaRegistry {
       if (nullable || notes) schema = { allOf: [schema], ...(nullable && { nullable: true }), ...(notes && { description: notes }) };
       return schema;
     }
-    if (nullable) schema.nullable = true;
+    if (nullable && schema.type) schema.nullable = true;
     if (notes) schema.description = notes;
     return schema;
   }
@@ -108,41 +107,49 @@ class SchemaRegistry {
 function scalar(f: FieldRule, base: string): Schema {
   const r = f.rules;
   const s: Schema = {};
-  const allowed = f.values?.length ? f.values : (literals(ruleArg(r, 'IsIn')) ?? literals(ruleArg(r, 'Equals')));
-  const unionLiterals = /^('[^']*'|"[^"]*"|-?\d+(\.\d+)?)(\s*\|\s*('[^']*'|"[^"]*"|-?\d+(\.\d+)?))*$/.test(base) ? literals(base) : undefined;
-  const values = allowed ?? unionLiterals;
+  const unionLiterals = /^('[^']*'|"[^"]*"|-?\d+(\.\d+)?)(\s*\|\s*('[^']*'|"[^"]*"|-?\d+(\.\d+)?))*$/.test(base) ? literals(`[${base.replace(/\|/g, ',')}]`) : undefined;
+  const values = f.values?.length ? f.values : (literals(ruleArgs(r, 'IsIn')?.[0]) ?? unionLiterals);
 
   if (values?.length) {
-    s.type = values.every((v) => typeof v === 'number') ? 'number' : values.every((v) => typeof v === 'boolean') ? 'boolean' : 'string';
+    const kinds = new Set(values.map((v) => typeof v));
+    if (kinds.size === 1) s.type = kinds.has('number') ? 'number' : kinds.has('boolean') ? 'boolean' : 'string';
     s.enum = values;
-  } else if (r.some((x) => /^IsInt\b/.test(x))) s.type = 'integer';
-  else if (r.some((x) => /^(IsNumber|IsPositive|IsNegative)\b/.test(x)) || base === 'number' || base === 'bigint') s.type = 'number';
-  else if (r.includes('IsBoolean') || base === 'boolean') s.type = 'boolean';
-  else if (base === 'Date' || r.some((x) => /^(IsDate|IsDateString|IsISO8601)\b/.test(x))) {
+  } else if (hasRule(r, 'IsNumberString')) {
+    s.type = 'string';
+    s.pattern = '^-?\\d+(\\.\\d+)?$';
+  } else if (hasRule(r, 'IsInt')) s.type = 'integer';
+  else if (hasRule(r, 'IsNumber') || hasRule(r, 'IsPositive') || hasRule(r, 'IsNegative') || base === 'number' || base === 'bigint') s.type = 'number';
+  else if (hasRule(r, 'IsBoolean') || base === 'boolean') s.type = 'boolean';
+  else if (hasRule(r, 'IsDateString') || hasRule(r, 'IsISO8601')) {
+    // class-validator accepts dates and date-times here, so no `format`.
+    s.type = 'string';
+  } else if (base === 'Date' || hasRule(r, 'IsDate')) {
     s.type = 'string';
     s.format = 'date-time';
-  } else if (base === 'string' || r.some((x) => /^(IsString|IsEmail|IsUUID|IsUrl|IsNumberString|Matches|Length|MinLength|MaxLength)\b/.test(x))) s.type = 'string';
-  else if (/^(object|Record<.*>|\{.*\})$/.test(base) || r.includes('IsObject')) s.type = 'object';
+  } else if (base === 'string' || ['IsString', 'IsEmail', 'IsUUID', 'IsUrl', 'Matches', 'Length', 'MinLength', 'MaxLength', 'IsNotEmpty'].some((x) => hasRule(r, x))) s.type = 'string';
+  else if (/^(object|Record<.*>|\{.*\})$/.test(base) || hasRule(r, 'IsObject')) s.type = 'object';
   else if (base && base !== 'any' && base !== 'unknown') s.description = `TypeScript type: ${base}`;
 
-  if (r.includes('IsEmail')) s.format = 'email';
-  if (r.some((x) => /^IsUUID\b/.test(x))) s.format = 'uuid';
-  if (r.some((x) => /^IsUrl\b/.test(x))) s.format = 'uri';
-  if (r.includes('IsNumberString')) s.pattern = '^-?\\d+(\\.\\d+)?$';
-  const match = /^\/(.*)\/[a-z]*$/.exec((ruleArg(r, 'Matches') ?? '').split(/,\s*\{/)[0].trim());
-  if (match && !match[1].includes('…')) s.pattern = match[1];
+  if (hasRule(r, 'IsEmail')) s.format = 'email';
+  if (hasRule(r, 'IsUUID')) s.format = 'uuid';
+  if (hasRule(r, 'IsUrl')) s.format = 'uri';
+  const pattern = matchesPattern(r);
+  if (pattern !== undefined) s.pattern = pattern;
 
-  const len = ruleArg(r, 'Length')?.split(',').map((x) => num(x));
-  const minLength = num(ruleArg(r, 'MinLength')) ?? len?.[0];
-  const maxLength = num(ruleArg(r, 'MaxLength')) ?? len?.[1];
-  if (minLength !== undefined) s.minLength = minLength;
-  else if (s.type === 'string' && r.includes('IsNotEmpty')) s.minLength = 1;
-  if (maxLength !== undefined) s.maxLength = maxLength;
-  const min = num(ruleArg(r, 'Min'));
-  const max = num(ruleArg(r, 'Max'));
-  if (min !== undefined) s.minimum = min;
-  else if (r.includes('IsPositive')) Object.assign(s, { minimum: 0, exclusiveMinimum: true });
-  if (max !== undefined) s.maximum = max;
+  if (s.type === 'string') {
+    const minLength = numArg(r, 'MinLength') ?? numArg(r, 'Length', 0);
+    const maxLength = numArg(r, 'MaxLength') ?? numArg(r, 'Length', 1);
+    if (minLength !== undefined) s.minLength = minLength;
+    else if (hasRule(r, 'IsNotEmpty')) s.minLength = 1;
+    if (maxLength !== undefined) s.maxLength = maxLength;
+  }
+  if (s.type === 'number' || s.type === 'integer') {
+    const min = numArg(r, 'Min');
+    const max = numArg(r, 'Max');
+    if (min !== undefined) s.minimum = min;
+    else if (hasRule(r, 'IsPositive')) Object.assign(s, { minimum: 0, exclusiveMinimum: true });
+    if (max !== undefined) s.maximum = max;
+  }
   return s;
 }
 
@@ -152,7 +159,9 @@ function paramSchema(p: ParamDoc | undefined): Schema {
   if (p.pipes.some((x) => /^Parse(Int|Float)Pipe/.test(x))) return { type: /Int/.test(p.pipes.join()) ? 'integer' : 'number' };
   if (p.pipes.some((x) => /^ParseUUIDPipe/.test(x))) return { type: 'string', format: 'uuid' };
   if (p.pipes.some((x) => /^ParseBoolPipe/.test(x))) return { type: 'boolean' };
-  return scalar({ name: p.key ?? p.name, type: p.type, required: true, rules: [] }, p.type.replace(/\s*\|\s*(null|undefined)\b/g, ''));
+  const s = scalar({ name: p.key ?? p.name, type: p.type, required: true, rules: [] }, p.type.replace(/\s*\|\s*(null|undefined)\b/g, ''));
+  // Path, query and header values arrive as strings unless a pipe converts them.
+  return s.type || s.enum ? s : { type: 'string' };
 }
 
 const camel = (s: string) => s.replace(/[-_]+([a-z0-9])/gi, (_, c: string) => c.toUpperCase());
@@ -178,7 +187,8 @@ function operationFor(ep: EndpointDoc, reg: SchemaRegistry, usedIds: Set<string>
       parameters.push({ name: f.name, in: 'query', required: f.required, schema, ...(description ? { description } : {}) });
     }
   }
-  for (const p of of('headers')) if (p.key) parameters.push({ name: p.key, in: 'header', required: true, schema: { type: 'string' } });
+  // Nest does not require headers; a handler that needs one checks it itself.
+  for (const p of of('headers')) if (p.key) parameters.push({ name: p.key, in: 'header', required: false, schema: paramSchema(p) });
 
   let requestBody: Schema | undefined;
   const bodies = of('body');
@@ -239,7 +249,7 @@ function operationFor(ep: EndpointDoc, reg: SchemaRegistry, usedIds: Set<string>
   for (let i = 2; usedIds.has(operationId); i++) operationId = `${ep.handler.replace(/\(\)$/, '').replace(/[^A-Za-z0-9]+/g, '_')}_${i}`;
   usedIds.add(operationId);
 
-  const auth = authFor(ep);
+  const auth: AuthDoc = ep.auth ?? { scheme: 'none' };
   const operation: Record<string, unknown> = {
     tags: [ep.group],
     summary: ep.summary ?? `${ep.method} ${ep.path}`,
@@ -248,8 +258,7 @@ function operationFor(ep: EndpointDoc, reg: SchemaRegistry, usedIds: Set<string>
     ...(parameters.length && { parameters }),
     ...(requestBody && { requestBody }),
     responses,
-    ...(auth === 'bearer' && { security: [{ bearerAuth: [] }] }),
-    ...(auth === 'basic' && { security: [{ basicAuth: [] }] }),
+    ...(auth.scheme !== 'none' && { security: [{ [`${auth.scheme}Auth`]: [] }] }),
   };
   return { id: ep.id, path, method: ep.method.toLowerCase(), auth, operation };
 }
@@ -259,14 +268,23 @@ const METHODS = new Set(['get', 'put', 'post', 'delete', 'options', 'head', 'pat
 export function openApiParts(app: AppDoc): OpenApiParts {
   const reg = new SchemaRegistry();
   const used = new Set<string>();
-  const operations = app.endpoints.filter((ep) => ep.kind === 'http' && METHODS.has(ep.method.toLowerCase())).map((ep) => operationFor(ep, reg, used));
-  return { title: app.name, version: app.version ?? '1.0.0', operations, schemas: reg.schemas };
+  const http = app.endpoints.filter((ep) => ep.kind === 'http');
+  const operations = http.filter((ep) => METHODS.has(ep.method.toLowerCase())).map((ep) => operationFor(ep, reg, used));
+  const skipped = http.filter((ep) => !METHODS.has(ep.method.toLowerCase())).map((ep) => `${ep.method} ${ep.path}`);
+  return { title: app.name, version: app.version ?? '1.0.0', operations, schemas: reg.schemas, skipped };
 }
 
 /** An OpenAPI 3.0.0 document for the given operations, with only the schemas they use. */
 export function assembleOpenApi(parts: OpenApiParts, operations: OpenApiOperation[], serverUrl: string): object {
   const paths: Record<string, Record<string, unknown>> = {};
-  for (const op of operations) (paths[op.path] ??= {})[op.method] = op.operation;
+  for (const op of operations) {
+    const at = (paths[op.path] ??= {});
+    const existing = at[op.method] as Record<string, unknown> | undefined;
+    // Two handlers for one route (e.g. modules loaded conditionally): keep the first, say so. Copy rather
+    // than edit, because the viewer assembles from the same parts on every export.
+    if (existing) at[op.method] = { ...existing, description: `${existing.description}\n\nAlso declared by ${String(op.operation.operationId)}.` };
+    else at[op.method] = op.operation;
+  }
 
   // Keep the schemas reachable from the chosen operations.
   const schemas: Record<string, unknown> = {};
@@ -289,8 +307,17 @@ export function assembleOpenApi(parts: OpenApiParts, operations: OpenApiOperatio
   for (const name of Object.keys(schemas).sort()) sorted[name] = schemas[name];
 
   const securitySchemes: Record<string, unknown> = {};
-  if (operations.some((o) => o.auth === 'bearer')) securitySchemes.bearerAuth = { type: 'http', scheme: 'bearer' };
-  if (operations.some((o) => o.auth === 'basic')) securitySchemes.basicAuth = { type: 'http', scheme: 'basic' };
+  if (operations.some((o) => o.auth.scheme === 'bearer')) securitySchemes.bearerAuth = { type: 'http', scheme: 'bearer' };
+  if (operations.some((o) => o.auth.scheme === 'basic')) securitySchemes.basicAuth = { type: 'http', scheme: 'basic' };
+  const cookie = operations.find((o) => o.auth.scheme === 'cookie');
+  if (cookie) {
+    securitySchemes.cookieAuth = {
+      type: 'apiKey',
+      in: 'cookie',
+      name: cookie.auth.cookie ?? 'session',
+      description: cookie.auth.cookie ? `Session cookie, checked by ${cookie.auth.source}.` : `Session cookie, checked by ${cookie.auth.source}. Its name was not found in the code.`,
+    };
+  }
   const tags = [...new Set(operations.map((o) => (o.operation.tags as string[])[0]))].map((name) => ({ name }));
 
   return {
@@ -299,7 +326,8 @@ export function assembleOpenApi(parts: OpenApiParts, operations: OpenApiOperatio
       title: parts.title,
       version: parts.version,
       description:
-        'Generated by nest-flowmap from the source code. Schemas come from the DTOs and their class-validator rules, responses from the exceptions each handler can reach, and security from guard names.',
+        'Generated by nest-flowmap from the source code. Schemas come from the DTOs and their class-validator rules, responses from the exceptions each handler can reach, and security from the guards and middleware that check credentials.' +
+        (parts.skipped?.length ? `\n\nNot included, because OpenAPI has no field for their method: ${parts.skipped.join(', ')}.` : ''),
     },
     servers: [{ url: serverUrl }],
     tags,

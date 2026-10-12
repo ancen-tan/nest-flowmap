@@ -31,46 +31,30 @@ uploaded. The viewer has Mermaid embedded and works offline.
 
 ## Install
 
-You need Node.js 18 or newer. Install it from this folder or from a packed file.
-
-### From this folder
+You need Node.js 18 or newer.
 
 ```bash
+npm install -g nest-flowmap
+nest-flowmap --version
+```
+
+Or run it once without installing:
+
+```bash
+npx nest-flowmap ~/projects/my-nest-app --out docs/api
+```
+
+### From source
+
+```bash
+git clone https://github.com/ancen-tan/nest-flowmap.git
 cd nest-flowmap
 npm install              # installs dependencies and builds dist/
-npm install -g .         # puts the nest-flowmap command on your PATH
-nest-flowmap --version
+npm install -g .         # links the nest-flowmap command to this folder
 ```
 
-`npm install -g .` links the global command to this folder, so a `git pull` followed by
-`npm install` (or `npm run build`) updates the command in place. Keep the folder where it is.
-
-### From a package file (to share with the team)
-
-```bash
-cd nest-flowmap
-npm install
-npm pack                 # writes nest-flowmap-<version>.tgz
-```
-
-Send the `.tgz` file to a teammate, who runs:
-
-```bash
-npm install -g ./nest-flowmap-0.1.0.tgz
-nest-flowmap --version
-```
-
-This makes a standalone copy; the original folder is not needed afterwards. To update, install
-a newer `.tgz` the same way.
-
-### From a Git repository
-
-If the folder is pushed to a Git host, it can be installed straight from there; npm builds it during
-install:
-
-```bash
-npm install -g git+ssh://git@bitbucket.org/<workspace>/nest-flowmap.git
-```
+A linked install follows the folder: after a `git pull`, run `npm install` (or `npm run build`) to
+update the command.
 
 ### Uninstall
 
@@ -192,7 +176,7 @@ Postman and Bruno can also import `openapi.json` directly.
 | `requestBody` | The `@Body()` DTO as a schema under `components.schemas`; nested DTOs get their own schema; `@UploadedFile()` becomes `multipart/form-data` |
 | Schema rules | `IsString`, `IsInt`, `IsNumber`, `IsBoolean`, `IsDate*` → `type` / `format`; `IsEmail` → `email`; `IsUUID` → `uuid`; `IsUrl` → `uri`; `IsEnum` and `IsIn` → `enum`; `Min` / `Max` → `minimum` / `maximum`; `Length`, `MinLength`, `MaxLength` → string lengths; `Matches` → `pattern`; `ArrayMinSize` / `ArrayMaxSize` → array sizes; `@IsOptional()` → not `required`. All rules are also listed in the field's `description` |
 | `responses` | One entry per status the analysis found, with every reason as the description (for example `UserExistsException: User with email ... already exists`). The success response has a schema when the return type's fields are known |
-| `security` | Guards named `*Basic*` → `basicAuth`; `*Jwt*` / `*Bearer*` → `bearerAuth` |
+| `security` | The first guard (or middleware answering 401) that can refuse the request decides the scheme: `basicAuth` when it checks `Basic` credentials, `bearerAuth` for JWT/`Bearer`, `cookieAuth` when it reads the session (cookie name from the `express-session` options, default `connect.sid`). Guards skipped through `@Public()`-style metadata do not count. Swagger's `@ApiBearerAuth` / `@ApiBasicAuth` / `@ApiCookieAuth` name the scheme when the code does not |
 | `tags` | One per controller |
 | `operationId` | `Controller_method`, made unique |
 | `description` | Handler and source line, pipeline, validation summary, responses and analysis notes |
@@ -208,14 +192,13 @@ Each exported request has:
 
 - the URL as `{{baseUrl}}/path/:param`, with path variables, query parameters from the query DTO
   (optional ones disabled) and keyed `@Headers('x')` headers;
-- a JSON body built from the body DTO. `IsIn` and `IsEnum` give the first allowed value. `IsEmail`,
-  `IsUUID`, date and phone rules give a matching sample, and `Min` gives the minimum. Anything else
-  is left empty, or shown as `<TypeName>` when the type is not known. Optional fields are included,
-  so remove the ones you do not send;
-- auth guessed from guard names: `*Basic*` guards use basic auth with `{{username}}` and `{{password}}`;
-  `*Jwt*` and `*Bearer*` guards use a bearer `{{token}}`. Auth done anywhere else (session cookies,
-  API-key middleware, library guards with other names) is not set, but the pipeline is listed in
-  each request's docs;
+- a JSON body built from the body DTO, with values chosen to pass its validators: the first allowed
+  value for `IsIn` / `IsEnum`, a valid email, UUID, date or phone number, the minimum for `Min`, and
+  strings sized to their length rules. `@IsEmpty` fields are left out; a type the tool cannot resolve
+  is shown as `<TypeName>`. Optional fields are included, so remove the ones you do not send;
+- auth from the same detection as the OpenAPI `security` above: basic auth with `{{username}}` and
+  `{{password}}`, or a bearer `{{token}}`. A session cookie cannot be filled in, so the request docs
+  say which cookie to send (log in first; Postman and Bruno keep cookies);
 - docs with the handler, pipeline, validation rules and every response the analysis found.
 
 Collections come with a `baseUrl` variable plus `token`, or `username` and `password`, as needed.
@@ -287,8 +270,7 @@ changes next to the code.
 **Generate docs in CI**
 
 ```bash
-npm install -g ./tools/nest-flowmap-0.1.0.tgz
-nest-flowmap . --out public/api-docs
+npx nest-flowmap . --out public/api-docs
 ```
 
 Publish `public/api-docs` as a static site or a pipeline artifact.
@@ -325,16 +307,27 @@ own "Analysis notes" where the tool could not follow something.
 
 - Anything wired at runtime is invisible: dynamic modules, `useFactory` providers, string-token
   injection without a typed interface, handlers looked up from a map.
-- Values are not tracked. A branch is drawn with its condition text, not evaluated.
-- Guards with no `canActivate` in the project (library guards) are drawn as a box that passes or rejects.
-- Interceptors are listed in order but their bodies are not drawn.
+- Values are not tracked. A branch is drawn with its condition text, not evaluated. Two kinds of
+  condition are decided per route: a guard or middleware reading route metadata (`@Public()` read with
+  `reflector.get…`) and middleware comparing `req.method`.
+- Guards with no `canActivate` in the project (library guards) are drawn as a box that passes or
+  rejects; subclasses of `ThrottlerGuard` reject with 429.
+- Interceptor bodies are drawn before the handler; what an interceptor does to the response afterwards
+  is not.
+- Exception filters change a documented status only when they answer the exceptions they `@Catch`
+  with one fixed status; a filter that computes the status keeps the original.
+- A global prefix computed at runtime (`configService.get(...)`) cannot be known; paths are shown
+  without it (or with the `?? 'fallback'` value when there is one) and the output says so.
 - `try/catch` is drawn with one error edge from the first database or external call in the block.
 - TypeORM hooks are shown only for instance operations (`save`, `remove`, `softRemove`, `recover`, finds).
   Subscribers are listed in the details, not drawn.
-- A method called twice in one endpoint is expanded the first time only.
+- A method called twice in one endpoint is expanded the first time only; later calls still show the
+  errors it can raise.
 - Database triggers, raw SQL contents and other services reached over the network end at one node.
-- Auth in the OpenAPI, Postman and Bruno output is inferred from guard names. Session cookies,
-  API keys checked in middleware, and guards with other names are not described.
+- Auth is inferred from what the guards and middleware check. API keys in custom headers and schemes
+  other than basic, bearer and session cookies are not described.
+- When modules bind a provider differently depending on configuration (two persistence modules,
+  conditionally imported controllers), the output names the alternatives instead of picking one.
 - Response bodies are described only when the handler's return type lists its fields; error
   bodies follow your exception filter and are not described.
 - A small share of mindmaps (2 of roughly 500 in testing) hit a layout bug in Mermaid 11. The viewer
@@ -347,6 +340,9 @@ own "Analysis notes" where the tool could not follow something.
 npm install          # dependencies, then builds dist/
 npm test             # builds, then runs the tests
 ```
+
+To release: `npm version patch` (or `minor` / `major`), then `npm publish`. `prepublishOnly` runs the
+tests first, and only `dist/src`, `assets`, `README.md` and `LICENSE` are published.
 
 | Path | Content |
 | --- | --- |

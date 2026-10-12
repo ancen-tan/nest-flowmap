@@ -114,4 +114,5 @@ export const ROUTE_DECORATORS: Record<string, string> = {
   Head: 'HEAD',
   All: 'ALL',
   Search: 'SEARCH',
+  Sse: 'GET',
 };

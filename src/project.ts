@@ -12,6 +12,7 @@ import {
   Node,
   Project,
   SourceFile,
+  SyntaxKind,
   TypeNode,
 } from 'ts-morph';
 import { HTTP_STATUS } from './http';
@@ -33,6 +34,8 @@ export interface Ctx {
   classIndex: Map<string, ClassDeclaration[]>;
   interfaceImpls: Map<string, ClassDeclaration[]>;
   depsCache: Map<ClassDeclaration, Map<string, Dep>>;
+  /** `{ provide: X, useClass: Y }` in module providers: token text → bound classes. */
+  bindings?: Map<string, ClassDeclaration[]>;
 }
 
 export type Callable = MethodDeclaration | FunctionDeclaration | ArrowFunction | FunctionExpression;
@@ -256,8 +259,45 @@ export function resolveIdentifier(ctx: Ctx, id: Node | undefined): Node | undefi
   } catch {
     /* fall through to the name index */
   }
+  // A name imported from a package (e.g. NotFoundException from '@nestjs/common') is never a project class,
+  // even when node_modules is missing and the project happens to declare a class with the same name.
+  if (isPackageImport(id as Identifier)) return undefined;
   const byName = ctx.classIndex.get(id.getText());
   return byName?.length === 1 ? byName[0] : undefined;
+}
+
+/** True when the identifier is imported from a package rather than a project file. */
+export function isPackageImport(id: Identifier): boolean {
+  const name = id.getText();
+  for (const imp of id.getSourceFile().getImportDeclarations()) {
+    const named = imp.getNamedImports().some((n) => (n.getAliasNode() ?? n.getNameNode()).getText() === name);
+    const def = imp.getDefaultImport()?.getText() === name || imp.getNamespaceImport()?.getText() === name;
+    if (!named && !def) continue;
+    const spec = imp.getModuleSpecifierValue();
+    if (spec.startsWith('.') || spec.startsWith('/')) return false;
+    const target = imp.getModuleSpecifierSourceFile();
+    return !target || target.isInNodeModules() || target.isDeclarationFile();
+  }
+  return false;
+}
+
+/** Module providers that bind a token to a class: `{ provide: ItemRepository, useClass: SqlItemRepository }`. */
+function bindings(ctx: Ctx): Map<string, ClassDeclaration[]> {
+  if (ctx.bindings) return ctx.bindings;
+  const map = new Map<string, ClassDeclaration[]>();
+  for (const sf of ctx.files) {
+    if (!sf.getFullText().includes('useClass')) continue;
+    for (const obj of sf.getDescendantsOfKind(SyntaxKind.ObjectLiteralExpression)) {
+      const provide = objectProp(obj, 'provide');
+      const use = objectProp(obj, 'useClass') ?? objectProp(obj, 'useExisting');
+      const cls = use ? resolveClass(ctx, unwrap(use)) : undefined;
+      if (!provide || !cls) continue;
+      const token = literalText(provide) ?? unwrap(provide).getText();
+      const list = map.get(token) ?? [];
+      if (!list.includes(cls)) map.set(token, [...list, cls]);
+    }
+  }
+  return (ctx.bindings = map);
 }
 
 export function resolveClass(ctx: Ctx, id: Node | undefined): ClassDeclaration | undefined {
@@ -363,11 +403,27 @@ function classify(ctx: Ctx, name: string, typeNode: TypeNode | undefined, decora
     return { ...dep, kind: 'queue', queue: literalText(decoratorArgs(injectQueue)[0]) };
   }
   if (/^EventEmitter2?$/.test(base)) return { ...dep, kind: 'events' };
-  if (base === 'HttpService') return { ...dep, kind: 'http' };
+  if (/^(HttpService|AxiosInstance|AxiosStatic|Axios|Got|KyInstance)$/.test(base)) return { ...dep, kind: 'http' };
   if (/^Client(Proxy|Kafka|RMQ|Grpc|Nats|Redis|Mqtt|TCP)$/.test(base)) return { ...dep, kind: 'client' };
   if (IGNORED_TYPES.test(base)) return { ...dep, kind: 'ignore' };
 
+  // `@Inject('TOKEN')` or an abstract class / interface: follow the class the module binds to it.
+  const injectToken = literalText(decoratorArgs(dec('Inject'))[0]);
+  const bound = injectToken !== undefined ? bindings(ctx).get(injectToken) : base ? bindings(ctx).get(base) : undefined;
+  if (bound?.length === 1) return { ...dep, kind: 'class', cls: bound[0], entity: repositoryEntity(ctx, bound[0]), note: `bound to ${bound[0].getName()}` };
+  if (bound && bound.length > 1) {
+    // Several modules bind the token (e.g. a persistence module chosen by configuration): which one runs is decided at runtime.
+    return { ...dep, note: `${injectToken ?? base} is bound to ${bound.map((c) => c.getName()).join(' or ')} by different modules` };
+  }
+
   const decl = resolveTypeNode(ctx, typeNode);
+  if (decl && Node.isClassDeclaration(decl) && decl.isAbstract()) {
+    const impls = ctx.classes.filter((c) => c !== decl && !c.isAbstract() && lineage(ctx, c).includes(decl));
+    if (impls.length === 1) return { ...dep, kind: 'class', cls: impls[0], entity: repositoryEntity(ctx, impls[0]), note: `extends ${decl.getName()}` };
+    if (impls.length > 1) {
+      return { ...dep, note: `${impls.length} classes extend ${decl.getName()}: ${impls.map((c) => c.getName()).join(', ')}` };
+    }
+  }
   if (decl && Node.isClassDeclaration(decl)) {
     return { ...dep, kind: 'class', cls: decl, entity: repositoryEntity(ctx, decl) };
   }

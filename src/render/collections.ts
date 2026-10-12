@@ -1,4 +1,5 @@
 import { AppDoc, EndpointDoc, FieldRule, ParamDoc } from '../model';
+import { hasRule, isEach, matchesPattern, numArg } from './rules';
 
 /**
  * Postman (v2.1) and Bruno collections for the HTTP endpoints, exported from the viewer.
@@ -35,7 +36,6 @@ export interface ExportRequest {
 }
 
 const PRIMITIVE_EXAMPLES: Record<string, unknown> = {
-  string: '',
   number: 0,
   bigint: 0,
   boolean: false,
@@ -45,8 +45,9 @@ const PRIMITIVE_EXAMPLES: Record<string, unknown> = {
   object: {},
 };
 
+/** A string literal type's first member: `'a' | 'b'` → 'a'. */
 function firstLiteral(text: string): unknown {
-  const m = /^\[?\s*(?:'([^']*)'|"([^"]*)"|(-?\d+(?:\.\d+)?)|(true|false))/.exec(text.trim());
+  const m = /^\s*(?:'([^']*)'|"([^"]*)"|(-?\d+(?:\.\d+)?)|(true|false))\s*(\||$)/.exec(text);
   if (!m) return undefined;
   if (m[1] !== undefined) return m[1];
   if (m[2] !== undefined) return m[2];
@@ -54,48 +55,62 @@ function firstLiteral(text: string): unknown {
   return m[4] === 'true';
 }
 
-function ruleArg(rules: string[], name: string): string | undefined {
-  const r = rules.find((x) => x.startsWith(`${name}(`));
-  return r?.slice(name.length + 1, -1);
-}
-
-/** A plausible example for one validated field. Unknown types become a `<TypeName>` placeholder. */
+/** A plausible example for one validated field, chosen to pass its validators. Unknown types become `<TypeName>`. */
 function exampleFor(f: FieldRule): unknown {
   const type = f.type.replace(/\s*\|\s*(null|undefined)\b/g, '').trim();
-  const isArray = /\[\]$/.test(type) || /^Array</.test(type) || f.rules.includes('IsArray');
+  const isArray = /\[\]$/.test(type) || /^Array</.test(type) || hasRule(f.rules, 'IsArray');
   const base = type.replace(/\[\]$/, '').replace(/^Array<(.*)>$/, '$1');
-  const one = scalarExample(f, base);
-  return isArray ? [one] : one;
+  if (!isArray) return scalarExample(f, base);
+  const one = scalarExample({ ...f, rules: f.rules.filter(isEach) }, base);
+  return Array.from({ length: Math.max(1, numArg(f.rules, 'ArrayMinSize') ?? 1) }, () => one);
 }
 
 function scalarExample(f: FieldRule, base: string): unknown {
   if (f.nested?.length) return objectExample(f.nested);
   const r = f.rules;
   if (f.values?.length) return f.values[0];
-  for (const name of ['IsIn', 'Equals']) {
-    const arg = ruleArg(r, name);
-    const lit = arg === undefined ? undefined : firstLiteral(arg);
-    if (lit !== undefined) return lit;
+  if (hasRule(r, 'IsEmail')) return 'user@example.com';
+  if (hasRule(r, 'IsUUID')) return '00000000-0000-4000-8000-000000000000';
+  if (hasRule(r, 'IsDateString') || hasRule(r, 'IsISO8601') || hasRule(r, 'IsDate')) {
+    // A date-only value when the field is limited to 10 characters or has its own pattern.
+    const max = numArg(r, 'MaxLength') ?? numArg(r, 'Length', 1);
+    return (max !== undefined && max < 24) || hasRule(r, 'Matches') ? '2026-01-01' : '2026-01-01T00:00:00.000Z';
   }
-  if (r.includes('IsEmail')) return 'user@example.com';
-  if (r.includes('IsUUID')) return '00000000-0000-4000-8000-000000000000';
-  if (r.some((x) => /^(IsDateString|IsISO8601|IsDate)\b/.test(x))) return '2026-01-01T00:00:00.000Z';
-  if (r.some((x) => /^(IsMobilePhone|IsPhoneNumber)\b/.test(x))) return '+6281234567890';
-  if (r.includes('IsNumberString')) return '0';
-  if (r.some((x) => /^(IsInt|IsNumber|IsPositive)\b/.test(x)) || base === 'number') {
-    const min = Number(ruleArg(r, 'Min'));
-    return Number.isFinite(min) ? min : r.includes('IsPositive') ? 1 : 0;
+  if (hasRule(r, 'IsMobilePhone') || hasRule(r, 'IsPhoneNumber')) return '+6281234567890';
+  const digits = digitsFor(r);
+  if (digits !== undefined) return digits;
+  if (hasRule(r, 'IsNumberString')) return String(numArg(r, 'Min') ?? 1);
+  if (hasRule(r, 'IsInt') || hasRule(r, 'IsNumber') || hasRule(r, 'IsPositive') || base === 'number') {
+    return numArg(r, 'Min') ?? (hasRule(r, 'IsPositive') ? 1 : 0);
   }
-  if (r.includes('IsBoolean')) return false;
+  if (hasRule(r, 'IsBoolean')) return false;
   const lit = firstLiteral(base);
   if (lit !== undefined) return lit;
+  if (base === 'string' || ['IsString', 'IsNotEmpty', 'Length', 'MinLength', 'MaxLength', 'Matches'].some((x) => hasRule(r, x))) {
+    const min = numArg(r, 'MinLength') ?? numArg(r, 'Length', 0) ?? 1;
+    const max = numArg(r, 'MaxLength') ?? numArg(r, 'Length', 1);
+    let text = 'string';
+    if (text.length < min) text = text.padEnd(min, 'x');
+    if (max !== undefined && text.length > max) text = text.slice(0, Math.max(max, min));
+    return text;
+  }
   if (base in PRIMITIVE_EXAMPLES) return PRIMITIVE_EXAMPLES[base];
   return `<${base}>`;
 }
 
+/** A digit string when the rules ask for one: IsNumberString with a length, or a `^\d{n}$`-style pattern. */
+function digitsFor(r: string[]): string | undefined {
+  const pattern = matchesPattern(r);
+  const m = pattern ? /^\^?(?:\\d|\[0-9\])(?:\{(\d+)(?:,(\d*))?\}|(\+))\$?$/.exec(pattern) : null;
+  const len = m ? Number(m[1] ?? 1) : hasRule(r, 'IsNumberString') ? numArg(r, 'MinLength') ?? numArg(r, 'Length', 0) : undefined;
+  if (len === undefined) return undefined;
+  return '1234567890'.repeat(Math.ceil(len / 10) || 1).slice(0, Math.max(len, 1));
+}
+
 function objectExample(fields: FieldRule[]): Record<string, unknown> {
   const o: Record<string, unknown> = {};
-  for (const f of fields) o[f.name] = exampleFor(f);
+  // @IsEmpty fields must be left out; everything else gets a value that passes its rules.
+  for (const f of fields) if (!hasRule(f.rules, 'IsEmpty')) o[f.name] = exampleFor(f);
   return o;
 }
 
@@ -116,17 +131,20 @@ function describe(f: FieldRule | undefined, fallbackType?: string): string {
 
 const camel = (s: string) => s.replace(/[-_]+([a-z0-9])/gi, (_, c: string) => c.toUpperCase());
 
+/** Auth the request tools can send for you; a session cookie comes from logging in, so it is described in the docs instead. */
 export function authFor(ep: EndpointDoc): Auth {
-  const guards = ep.pipeline.filter((p) => p.kind === 'guard').map((p) => p.name);
-  if (guards.some((g) => /basic/i.test(g))) return 'basic';
-  if (guards.some((g) => /jwt|bearer|access.?token/i.test(g))) return 'bearer';
-  return 'none';
+  const scheme = ep.auth?.scheme;
+  return scheme === 'bearer' || scheme === 'basic' ? scheme : 'none';
 }
 
 export function docsFor(ep: EndpointDoc): string {
   const out: string[] = [];
   if (ep.summary) out.push(ep.summary, '');
   out.push(`Handler: \`${ep.handler}\` (${ep.loc.file}:${ep.loc.line})`);
+  if (ep.auth && ep.auth.scheme !== 'none') {
+    const how = ep.auth.scheme === 'cookie' ? `session cookie${ep.auth.cookie ? ` \`${ep.auth.cookie}\`` : ''} (log in first; the cookie is kept by the client)` : `${ep.auth.scheme} auth`;
+    out.push(`Auth: ${how}, checked by ${ep.auth.source}`);
+  }
   if (ep.pipeline.length) {
     out.push('', 'Pipeline:', ...ep.pipeline.map((p) => `- ${p.kind} \`${p.name}\` (${p.scope})${p.note ? ` - ${p.note}` : ''}`));
   }

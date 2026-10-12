@@ -1,16 +1,38 @@
 {
   "name": "nest-flowmap",
   "version": "0.1.0",
-  "private": true,
   "description": "Static documentation for NestJS APIs: per-endpoint flowcharts, an offline viewer, OpenAPI 3.0.0, Postman and Bruno exports (no LLM, runs locally)",
+  "keywords": [
+    "nestjs",
+    "nest",
+    "documentation",
+    "openapi",
+    "swagger",
+    "flowchart",
+    "mermaid",
+    "static-analysis",
+    "postman",
+    "bruno",
+    "api-docs"
+  ],
   "license": "MIT",
+  "author": "Yansen",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ancen-tan/nest-flowmap.git"
+  },
+  "homepage": "https://github.com/ancen-tan/nest-flowmap#readme",
+  "bugs": {
+    "url": "https://github.com/ancen-tan/nest-flowmap/issues"
+  },
   "bin": {
     "nest-flowmap": "dist/src/cli.js"
   },
   "files": [
     "dist/src",
     "assets",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=18"
@@ -18,7 +40,8 @@
   "scripts": {
     "build": "tsc -p .",
     "prepare": "npm run build",
-    "test": "npm run build && node --test dist/test/flowmap.test.js"
+    "test": "npm run build && node --test dist/test/flowmap.test.js dist/test/accuracy.test.js",
+    "prepublishOnly": "npm test"
   },
   "dependencies": {
     "mermaid": "^11.4.0",
